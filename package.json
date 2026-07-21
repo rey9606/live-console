@@ -1,0 +1,10 @@
+{
+  "name": "live-console",
+  "version": "1.0.0",
+  "description": "MCP server that manages dev server processes in background and provides instant console output access",
+  "type": "module",
+  "main": "index.mjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}
