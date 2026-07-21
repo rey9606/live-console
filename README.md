@@ -7,24 +7,23 @@ MCP server for [OpenCode](https://opencode.ai) that manages dev server processes
 ## Features
 
 - **Background process management** — start, stop, restart dev servers
-- **Structured build results** — `wait_for_recompile` blocks until rebuild finishes and returns `{status, errors[], warnings[], duration_ms}`
+- **Structured build results** — `watch` blocks until rebuild finishes and returns `{status, errors[], warnings[], duration_ms}`
 - **Pattern-based build tracking** — detects compilation cycles for NestJS and Angular automatically
 - **Error/warning extraction** — parses TypeScript errors (`TS####`) and Angular warnings (`NG####`)
 - **Auto-cleanup** — child processes are killed when OpenCode closes or the MCP server terminates
 - **Duplicate detection** — alerts when trying to start an already-running server
-- **Self-documenting** — `get_usage_guide` tool returns the full usage guide to the AI agent
+- **Script validation** — `start_dev` validates cmd against `package.json`, rejects one-shot builds with suggestions
+- **Self-documenting errors** — validation errors include the full usage guide inline
 
 ## Tools
 
 | Tool | Description |
 |---|---|
-| `start_dev` | Start a dev server in background |
-| `dev_output` | Get recent output from a server |
+| `start_dev` | Start a dev server in background (rejects one-shot builds) |
+| `watch` | Get compilation result or raw output. Auto-detects state |
 | `stop_dev` | Stop a running server |
 | `restart_dev` | Restart a server with same params |
 | `dev_status` | Detailed status + last build info |
-| `wait_for_recompile` | Block until recompilation completes |
-| `wait_for_build` | Block until initial build or full startup |
 | `get_usage_guide` | Returns full usage guide to the AI agent |
 
 ## Installation
@@ -62,44 +61,64 @@ The tools will appear with the `live-console_` prefix.
 ### Start a server and wait for full startup
 
 ```javascript
-start_dev({
-  name: "nest-server",
-  cwd: "/path/to/nest-project",
-  cmd: "run start:dev"
-})
-
-wait_for_build({ name: "nest-server", mode: "full", timeout: 120 })
+start_dev({ name: "nest", cwd: "/project/nest", cmd: "run start:dev" })
+watch({ name: "nest", startup: true, timeout: 120 })
 ```
 
 ### After code changes, verify compilation
 
 ```javascript
 // Agent edits files...
-wait_for_recompile({ name: "nest-server", timeout: 30 })
+watch({ name: "nest", timeout: 30 })
 // → { status: "success", duration_ms: 800, errors: [], warnings: [...], output: "Found 0 errors..." }
 ```
 
 ### Handle compilation errors
 
 ```javascript
-wait_for_recompile({ name: "nest-server" })
+watch({ name: "nest" })
 // → { status: "failure", duration_ms: 400,
 //     errors: [{ file: "src/app.module.ts:79:1", code: "TS2304", message: "Cannot find name 'asdsd'." }],
 //     warnings: [] }
+```
+
+### Raw output (debug, non-blocking)
+
+```javascript
+watch({ name: "nest", lines: 20 })
 ```
 
 ### Check server status
 
 ```javascript
 dev_status()
-// → { "nest-server": { status: "running", build: { state: "idle", lastBuild: { status: "success", ... } } } }
+// → { "nest": { status: "running", build: { state: "idle", lastBuild: { status: "success", ... } } } }
 ```
 
-### Raw output (debug)
+### What NOT to do (start_dev rejects these)
 
 ```javascript
-dev_output({ name: "nest-server", lines: 20 })
+start_dev({ name: "x", cmd: "build" })        // ❌ one-shot build
+start_dev({ name: "x", cmd: "ng build --prod" }) // ❌ not a package.json script
+start_dev({ name: "x", cmd: "test" })          // ❌ one-shot test
 ```
+
+Use bash directly for one-shot commands:
+
+```bash
+pnpm build
+pnpm test
+pnpm lint
+```
+
+## watch() behaviour
+
+| Call | What it does |
+|---|---|
+| `watch({name:"angular"})` | Compilation result (waits if building, returns last if idle) |
+| `watch({name:"angular", startup:true})` | Waits for full app startup (Nest/Angular URL) |
+| `watch({name:"angular", lines:20})` | Last 20 lines raw output (non-blocking) |
+| `watch({name:"angular", lines:20, clear:true})` | Same + clears buffer |
 
 ## Build detection patterns
 
