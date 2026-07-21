@@ -6,6 +6,8 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { spawn } from "child_process";
+import { existsSync, readFileSync } from "fs";
+import { join } from "path";
 
 const MAX_LINES = 2000;
 const KILL_TIMEOUT_MS = 5000;
@@ -58,6 +60,71 @@ const PATTERNS = {
 
 function matchAny(line, patterns) {
   return patterns.some(p => p.test(line));
+}
+
+const ONESHOT_PATTERNS = [/^build/, /^test/, /^lint/, /^format/, /^typecheck/, /^seed/, /^migration/, /^generate/];
+const DEV_PATTERNS = [/--watch/, /serve/, /:dev$/, /:debug$/, /^start$/, /^dev$/, /^host$/];
+
+function readPackageJson(cwd) {
+  try {
+    const p = join(cwd, "package.json");
+    if (!existsSync(p)) return null;
+    return JSON.parse(readFileSync(p, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+function validateScript(cwd, cmd, runner) {
+  const pkg = readPackageJson(cwd);
+  if (!pkg) return { valid: true, note: "No package.json found, skipping validation" };
+
+  const scripts = pkg.scripts || {};
+  const scriptNames = Object.keys(scripts);
+
+  let scriptName = null;
+
+  // "run start:dev" → extract "start:dev"
+  const runMatch = cmd.match(/^run\s+(.+)/);
+  if (runMatch) {
+    scriptName = runMatch[1];
+  } else if (scripts[cmd] !== undefined) {
+    scriptName = cmd;
+  }
+
+  if (!scriptName) {
+    return {
+      valid: false,
+      message: `❌ "${cmd}" no coincide con ningun script de package.json.\nScripts disponibles: ${scriptNames.join(", ")}`,
+      scripts: scriptNames,
+    };
+  }
+
+  if (scripts[scriptName] === undefined) {
+    return {
+      valid: false,
+      message: `❌ No existe el script "${scriptName}".\nScripts disponibles: ${scriptNames.join(", ")}`,
+      scripts: scriptNames,
+    };
+  }
+
+  const scriptValue = scripts[scriptName];
+  const isOneShot = ONESHOT_PATTERNS.some(p => p.test(scriptName));
+  const isDevServer = DEV_PATTERNS.some(p => p.test(scriptName)) || DEV_PATTERNS.some(p => p.test(scriptValue));
+
+  if (isOneShot && !isDevServer) {
+    const devScripts = scriptNames.filter(s =>
+      DEV_PATTERNS.some(p => p.test(s) || p.test(scripts[s]))
+    );
+    return {
+      valid: false,
+      type: "one-shot",
+      message: `⚠️ "${scriptName}" es un script BUILD one-shot.\nstart_dev es para servidores de desarrollo que se mantienen corriendo (con --watch).\n\nScripts de desarrollo disponibles: ${devScripts.length ? devScripts.join(", ") : "(ninguno detectado)"}`,
+      scripts: scriptNames,
+    };
+  }
+
+  return { valid: true, scriptName, scriptValue, isDevServer: true };
 }
 
 function getTracker(name) {
@@ -314,16 +381,20 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: [
     {
       name: "start_dev",
-      description: `Start a dev server process in background.
+      description: `Start a DEV SERVER process in background.
+Use this ONLY for long-running dev servers (with --watch, :dev, serve, start, dev, host).
+DO NOT use for one-shot builds (build, test, lint, typecheck, seed, migration, generate).
+The tool validates against package.json scripts and rejects/one-shot scripts with suggestions.
+
 The agent provides:
 - name: unique identifier for this server
 - cwd: working directory (absolute path)
-- cmd: the command to run WITHOUT the runner (e.g. "run start:dev", "ng serve", "run dev")
-- runner: optional, defaults to "pnpm". Use "npm", "yarn", "bun", "npx", etc.
+- cmd: the command to run WITHOUT the runner (e.g. "run start:dev", "start", "dev", "run host")
+- runner: optional, defaults to "pnpm". Options: pnpm, npm, yarn, bun, npx
 
 Examples:
   start_dev({ name: "nest", cwd: "/project/server", cmd: "run start:dev" })
-  start_dev({ name: "angular", cwd: "/project/client", cmd: "ng serve", runner: "npx" })`,
+  start_dev({ name: "angular", cwd: "/project/client", cmd: "start" })`,
       inputSchema: {
         type: "object",
         properties: {
@@ -457,6 +528,14 @@ Llamaste a "${name}".` },
     case "start_dev": {
       const { name: serverName, cwd, cmd, runner } = args;
       const actualRunner = runner || "pnpm";
+
+      const validation = validateScript(cwd, cmd, actualRunner);
+      if (!validation.valid) {
+        return {
+          content: [{ type: "text", text: validation.message }],
+          isError: true,
+        };
+      }
 
       if (processes.has(serverName)) {
         const existing = processes.get(serverName);
