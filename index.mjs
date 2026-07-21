@@ -65,6 +65,37 @@ function matchAny(line, patterns) {
 const ONESHOT_PATTERNS = [/^build/, /^test/, /^lint/, /^format/, /^typecheck/, /^seed/, /^migration/, /^generate/];
 const DEV_PATTERNS = [/--watch/, /serve/, /:dev$/, /:debug$/, /^start$/, /^dev$/, /^host$/];
 
+function getUsageGuideText() {
+  return `┌─────────────────────────────────────────────────────────────┐
+│ start_dev es SOLO para SERVICIOS DE DESARROLLO              │
+│ (procesos que se mantienen corriendo con --watch)           │
+└─────────────────────────────────────────────────────────────┘
+
+❌ NO USAR start_dev PARA:
+   build, test, lint, format, typecheck, seed, migration, generate, docker
+   → esos se ejecutan con bash directamente
+
+✅ USAR start_dev PARA:
+   start, start:dev, dev, host, serve, watch, start:debug
+   (scripts con --watch o :dev que corren indefinidamente)
+
+📋 FLUJO CORRECTO:
+   1. start_dev({name:"angular", cmd:"start"})
+   2. wait_for_build({name:"angular", mode:"compile"})
+   3. [editas codigo]
+   4. wait_for_recompile({name:"angular"})  ← bloquea hasta compilar
+
+📋 HERRAMIENTAS:
+   start_dev           → inicia servidor dev (NO builds)
+   wait_for_recompile  → espera rebuild tras editar codigo
+   wait_for_build      → espera build inicial del dev server
+   dev_output          → debug output (NO para esperar compilaciones)
+   dev_status          → estado del servidor + ultimo build
+   stop_dev            → detiene servidor
+   restart_dev         → reinicia servidor
+   get_usage_guide     → guia completa`;
+}
+
 function readPackageJson(cwd) {
   try {
     const p = join(cwd, "package.json");
@@ -95,7 +126,11 @@ function validateScript(cwd, cmd, runner) {
   if (!scriptName) {
     return {
       valid: false,
-      message: `❌ "${cmd}" no coincide con ningun script de package.json.\nScripts disponibles: ${scriptNames.join(", ")}`,
+      message: `❌ "${cmd}" no coincide con ningun script de package.json.
+
+${getUsageGuideText()}
+
+Scripts disponibles en package.json: ${scriptNames.join(", ")}`,
       scripts: scriptNames,
     };
   }
@@ -103,7 +138,11 @@ function validateScript(cwd, cmd, runner) {
   if (scripts[scriptName] === undefined) {
     return {
       valid: false,
-      message: `❌ No existe el script "${scriptName}".\nScripts disponibles: ${scriptNames.join(", ")}`,
+      message: `❌ No existe el script "${scriptName}".
+
+${getUsageGuideText()}
+
+Scripts disponibles en package.json: ${scriptNames.join(", ")}`,
       scripts: scriptNames,
     };
   }
@@ -119,7 +158,11 @@ function validateScript(cwd, cmd, runner) {
     return {
       valid: false,
       type: "one-shot",
-      message: `⚠️ "${scriptName}" es un script BUILD one-shot.\nstart_dev es para servidores de desarrollo que se mantienen corriendo (con --watch).\n\nScripts de desarrollo disponibles: ${devScripts.length ? devScripts.join(", ") : "(ninguno detectado)"}`,
+      message: `⚠️ "${scriptName}" es un script BUILD one-shot, no un servidor de desarrollo.
+
+${getUsageGuideText()}
+
+Scripts de desarrollo disponibles: ${devScripts.length ? devScripts.join(", ") : "(ninguno detectado)"}`,
       scripts: scriptNames,
     };
   }
@@ -505,20 +548,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     _firstCall = false;
     return {
       content: [
-        { type: "text", text: `📘 Primera vez en esta sesión? Acá un resumen rápido:
+        { type: "text", text: `📘 Primera vez en esta sesion? Usaste "${name}".
 
-start_dev(name, cwd, cmd, runner?)   → inicia un server
-wait_for_recompile(name, timeout?)   → DESPUÉS de editar código, espera a que compile y devuelve resultado estructurado
-wait_for_build(name, mode?, timeout?) → espera el build inicial o startup completo
-dev_output(name, lines?, clear?)     → solo para debug (NO para esperar compilaciones)
-dev_status(name?)                     → estado del server + último build
-stop_dev(name)                        → lo detiene
-restart_dev(name)                     → lo reinicia
-get_usage_guide()                     → guía completa
-
-Regla de oro: editaste código? → wait_for_recompile. No usas dev_output para eso.
-
-Llamaste a "${name}".` },
+${getUsageGuideText()}` },
         { type: "text", text: "" },
       ],
     };
@@ -852,44 +884,13 @@ No necesitas volver a iniciarlo. Usa:
       return {
         content: [{ type: "text", text: `# live-console Usage Guide
 
-Optimized for NestJS and Angular (works with any Node.js dev server).
-
-## Tools
-
-| Tool | What it does |
-|---|---|
-| start_dev | Start a dev server in background |
-| dev_output | Get recent output lines |
-| stop_dev | Stop a running server |
-| restart_dev | Restart with same params |
-| dev_status | Detailed status + last build info |
-| wait_for_recompile | **Block until recompilation completes — use after edits** |
-| wait_for_build | Block until initial build or full startup |
-| get_usage_guide | This guide |
-
-## Flujo óptimo
-
-1. start_dev(name, cwd, cmd, runner?)
-   - name: any unique id ("nest", "angular", etc.)
-   - cwd: absolute path to project
-   - cmd: command WITHOUT the runner (e.g. "run start:dev", "ng serve")
-   - runner: "pnpm" (default), "npm", "npx", "yarn", "bun"
-
-2. wait_for_build(name, mode?, timeout?)
-   - mode "compile" (default) → returns when compilation result is known
-   - mode "full" → waits for full app startup (Nest started / Angular URL)
-
-3. After editing code → wait_for_recompile(name, timeout?)
-   - Blocks until dev server finishes recompilation
-   - Returns structured: { status, errors[], warnings[], duration_ms }
-
-4. For raw console output → dev_output(name, lines?, clear?)
+${getUsageGuideText()}
 
 ## Build detection (optimizado para NestJS / Angular)
 
 NestJS:
   Start:  "Starting compilation in watch mode..." | "File change detected..."
-  Result: "Found 0/N errors. Watching for file changes."  ← super rápido (~0.5s)
+  Result: "Found 0/N errors. Watching for file changes."  ← super rapido (~0.5s)
   Full:   "Nest application successfully started"
 
 Angular:
@@ -914,7 +915,8 @@ Timeout:
 - If the server is idle when wait_for_recompile is called, it waits up to 10s for a build to start
 - Default timeout: wait_for_recompile=60s, wait_for_build=120s
 - Child processes are auto-killed when OpenCode closes (SIGTERM/SIGINT/exit)
-- Duplicate start_dev attempts return the existing server info` }],
+- Duplicate start_dev attempts return the existing server info
+- start_dev validates cmd against package.json — one-shot builds are rejected with suggestions` }],
       };
     }
 
