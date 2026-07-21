@@ -412,6 +412,14 @@ Options:
         required: ["name"],
       },
     },
+    {
+      name: "get_usage_guide",
+      description: "Returns a comprehensive usage guide for all live-console tools with flow examples, build detection patterns, and best practices. Call this first to understand how to use the tools effectively.",
+      inputSchema: {
+        type: "object",
+        properties: {},
+      },
+    },
   ],
 }));
 
@@ -712,6 +720,76 @@ Use restart_dev("${serverName}") to restart it, or stop_dev("${serverName}") fir
         return { content: [{ type: "text", text: JSON.stringify(tracker.lastBuild, null, 2) }] };
       }
       return { content: [{ type: "text", text: JSON.stringify(endRes, null, 2) }] };
+    }
+
+    case "get_usage_guide": {
+      return {
+        content: [{ type: "text", text: `# live-console Usage Guide
+
+Optimized for NestJS and Angular (works with any Node.js dev server).
+
+## Tools
+
+| Tool | What it does |
+|---|---|
+| start_dev | Start a dev server in background |
+| dev_output | Get recent output lines |
+| stop_dev | Stop a running server |
+| restart_dev | Restart with same params |
+| dev_status | Detailed status + last build info |
+| wait_for_recompile | **Block until recompilation completes — use after edits** |
+| wait_for_build | Block until initial build or full startup |
+| get_usage_guide | This guide |
+
+## Flujo óptimo
+
+1. start_dev(name, cwd, cmd, runner?)
+   - name: any unique id ("nest", "angular", etc.)
+   - cwd: absolute path to project
+   - cmd: command WITHOUT the runner (e.g. "run start:dev", "ng serve")
+   - runner: "pnpm" (default), "npm", "npx", "yarn", "bun"
+
+2. wait_for_build(name, mode?, timeout?)
+   - mode "compile" (default) → returns when compilation result is known
+   - mode "full" → waits for full app startup (Nest started / Angular URL)
+
+3. After editing code → wait_for_recompile(name, timeout?)
+   - Blocks until dev server finishes recompilation
+   - Returns structured: { status, errors[], warnings[], duration_ms }
+
+4. For raw console output → dev_output(name, lines?, clear?)
+
+## Build detection (optimizado para NestJS / Angular)
+
+NestJS:
+  Start:  "Starting compilation in watch mode..." | "File change detected..."
+  Result: "Found 0/N errors. Watching for file changes."  ← super rápido (~0.5s)
+  Full:   "Nest application successfully started"
+
+Angular:
+  Start:  "Changes detected. Rebuilding..." | "> Building..."
+  Result: "Page reload sent to client(s)." | "Application bundle generation failed."
+  Full:   "Local: http://..."
+
+## Structured response
+
+Success:
+  { status: "success", duration_ms: 800, errors: [], warnings: [...], output: "Found 0 errors..." }
+
+Failure:
+  { status: "failure", duration_ms: 400, errors: [{ file: "...", code: "TS2304", message: "..." }] }
+
+Timeout:
+  { status: "timeout", message: "No recompilation detected within timeout" }
+
+## Notes
+
+- Errors and warnings are extracted automatically and returned separately
+- If the server is idle when wait_for_recompile is called, it waits up to 10s for a build to start
+- Default timeout: wait_for_recompile=60s, wait_for_build=120s
+- Child processes are auto-killed when OpenCode closes (SIGTERM/SIGINT/exit)
+- Duplicate start_dev attempts return the existing server info` }],
+      };
     }
 
     default:

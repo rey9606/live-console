@@ -2,14 +2,17 @@
 
 MCP server for [OpenCode](https://opencode.ai) that manages dev server processes in background and provides structured build feedback to the AI agent.
 
+> **Optimizado para NestJS y Angular.** Funciona con cualquier dev server de Node.js, pero los patrones de detección de compilación están afinados para estos dos frameworks.
+
 ## Features
 
-- **Background process management** — start, stop, restart dev servers (NestJS, Angular, etc.)
+- **Background process management** — start, stop, restart dev servers
 - **Structured build results** — `wait_for_recompile` blocks until rebuild finishes and returns `{status, errors[], warnings[], duration_ms}`
 - **Pattern-based build tracking** — detects compilation cycles for NestJS and Angular automatically
 - **Error/warning extraction** — parses TypeScript errors (`TS####`) and Angular warnings (`NG####`)
 - **Auto-cleanup** — child processes are killed when OpenCode closes or the MCP server terminates
 - **Duplicate detection** — alerts when trying to start an already-running server
+- **Self-documenting** — `get_usage_guide` tool returns the full usage guide to the AI agent
 
 ## Tools
 
@@ -22,6 +25,7 @@ MCP server for [OpenCode](https://opencode.ai) that manages dev server processes
 | `dev_status` | Detailed status + last build info |
 | `wait_for_recompile` | Block until recompilation completes |
 | `wait_for_build` | Block until initial build or full startup |
+| `get_usage_guide` | Returns full usage guide to the AI agent |
 
 ## Installation
 
@@ -103,6 +107,10 @@ dev_output({ name: "nest-server", lines: 20 })
 |---|---|---|---|
 | **NestJS** | `Starting compilation in watch mode...` / `File change detected...` | `Found 0/N errors. Watching for file changes.` | `Nest application successfully started` |
 | **Angular** | `Changes detected. Rebuilding...` / `> Building...` | `Page reload sent to client(s).` / `Application bundle generation failed.` | `➜  Local: http://...` |
+
+## Supported frameworks
+
+Actualmente optimizado para **NestJS** y **Angular** (los patrones de build start/end/full startup están ajustados para estos dos). Funciona con cualquier dev server de Node.js, pero la detección de ciclos de compilación puede no capturar todos los casos en otros frameworks.
 
 ## Requirements
 
