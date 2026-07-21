@@ -30,6 +30,10 @@ process.on("SIGINT", () => { cleanupChildProcesses(); process.exit(0); });
 process.on("SIGHUP", () => { cleanupChildProcesses(); process.exit(0); });
 process.on("exit", cleanupChildProcesses);
 
+let _firstCall = true;
+const _pollingCounters = new Map();
+const _lastToolCall = new Map();
+
 const PATTERNS = {
   buildStart: [
     /Starting compilation in watch mode/,
@@ -426,6 +430,29 @@ Options:
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
 
+  if (_firstCall && name !== "get_usage_guide") {
+    _firstCall = false;
+    return {
+      content: [
+        { type: "text", text: `📘 Primera vez en esta sesión? Acá un resumen rápido:
+
+start_dev(name, cwd, cmd, runner?)   → inicia un server
+wait_for_recompile(name, timeout?)   → DESPUÉS de editar código, espera a que compile y devuelve resultado estructurado
+wait_for_build(name, mode?, timeout?) → espera el build inicial o startup completo
+dev_output(name, lines?, clear?)     → solo para debug (NO para esperar compilaciones)
+dev_status(name?)                     → estado del server + último build
+stop_dev(name)                        → lo detiene
+restart_dev(name)                     → lo reinicia
+get_usage_guide()                     → guía completa
+
+Regla de oro: editaste código? → wait_for_recompile. No usas dev_output para eso.
+
+Llamaste a "${name}".` },
+        { type: "text", text: "" },
+      ],
+    };
+  }
+
   switch (name) {
     case "start_dev": {
       const { name: serverName, cwd, cmd, runner } = args;
@@ -442,9 +469,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   PID:  ${existing.process?.pid}
   CWD:  ${existing.cwd}
   Cmd:  ${existing.runner} ${existing.cmd}
-  Status: dev_status("${serverName}")
 
-Use restart_dev("${serverName}") to restart it, or stop_dev("${serverName}") first.`,
+No necesitas volver a iniciarlo. Usa:
+  dev_status("${serverName}")       → ver su estado actual
+  wait_for_recompile("${serverName}") → esperar resultado de compilacion
+  restart_dev("${serverName}")      → si necesitas reiniciarlo
+  stop_dev("${serverName}")         → si quieres detenerlo primero`,
             }],
             isError: true,
           };
@@ -472,6 +502,16 @@ Use restart_dev("${serverName}") to restart it, or stop_dev("${serverName}") fir
     case "dev_output": {
       const { name: serverName, lines, clear } = args;
       const proc = processes.get(serverName);
+
+      const prev = _lastToolCall.get(serverName);
+      const count = _pollingCounters.get(serverName) || 0;
+      if (prev === "dev_output") {
+        _pollingCounters.set(serverName, count + 1);
+      } else {
+        _pollingCounters.set(serverName, 0);
+      }
+      _lastToolCall.set(serverName, "dev_output");
+
       if (!proc) {
         return {
           content: [{ type: "text", text: `No server found with name "${serverName}". Use start_dev first or check dev_status.` }],
@@ -479,13 +519,18 @@ Use restart_dev("${serverName}") to restart it, or stop_dev("${serverName}") fir
         };
       }
 
-      const count = lines ? Math.min(lines, proc.buffer.length) : proc.buffer.length;
-      const output = proc.buffer.slice(-count).join("\n") || "[No output yet]";
+      const outputCount = lines ? Math.min(lines, proc.buffer.length) : proc.buffer.length;
+      const output = proc.buffer.slice(-outputCount).join("\n") || "[No output yet]";
 
       if (clear) proc.buffer = [];
 
+      let hint = "";
+      if (count >= 1) {
+        hint = `\n⚠️  Noto que consultas dev_output repetidamente. Si estas esperando una compilacion, usa wait_for_recompile("${serverName}") — bloquea hasta que termine y devuelve el resultado completo con errores.`;
+      }
+
       return {
-        content: [{ type: "text", text: output }],
+        content: [{ type: "text", text: output + hint }],
       };
     }
 
@@ -600,6 +645,7 @@ Use restart_dev("${serverName}") to restart it, or stop_dev("${serverName}") fir
 
     case "wait_for_recompile": {
       const { name: serverName, timeout } = args;
+      _pollingCounters.set(serverName, 0);
       const timeoutMs = (timeout || DEFAULT_RECOMPILE_TIMEOUT / 1000) * 1000;
       const proc = processes.get(serverName);
 
@@ -659,6 +705,7 @@ Use restart_dev("${serverName}") to restart it, or stop_dev("${serverName}") fir
 
     case "wait_for_build": {
       const { name: serverName, timeout, mode } = args;
+      _pollingCounters.set(serverName, 0);
       const timeoutMs = (timeout || DEFAULT_BUILD_TIMEOUT / 1000) * 1000;
       const buildMode = mode || "compile";
       const proc = processes.get(serverName);
