@@ -33,8 +33,6 @@ process.on("SIGHUP", () => { cleanupChildProcesses(); process.exit(0); });
 process.on("exit", cleanupChildProcesses);
 
 let _firstCall = true;
-const _pollingCounters = new Map();
-const _lastToolCall = new Map();
 
 const PATTERNS = {
   buildStart: [
@@ -81,19 +79,17 @@ function getUsageGuideText() {
 
 📋 FLUJO CORRECTO:
    1. start_dev({name:"angular", cmd:"start"})
-   2. wait_for_build({name:"angular", mode:"compile"})
+   2. watch({name:"angular"})             ← espera primer build
    3. [editas codigo]
-   4. wait_for_recompile({name:"angular"})  ← bloquea hasta compilar
+   4. watch({name:"angular"})             ← espera rebuild
 
 📋 HERRAMIENTAS:
-   start_dev           → inicia servidor dev (NO builds)
-   wait_for_recompile  → espera rebuild tras editar codigo
-   wait_for_build      → espera build inicial del dev server
-   dev_output          → debug output (NO para esperar compilaciones)
-   dev_status          → estado del servidor + ultimo build
-   stop_dev            → detiene servidor
-   restart_dev         → reinicia servidor
-   get_usage_guide     → guia completa`;
+   start_dev    → inicia servidor dev (NO builds)
+   watch        → espera compilacion / rebuild / output raw
+   dev_status   → estado del servidor + ultimo build
+   stop_dev     → detiene servidor
+   restart_dev  → reinicia servidor
+   get_usage_guide → guia completa`;
 }
 
 function readPackageJson(cwd) {
@@ -450,14 +446,24 @@ Examples:
       },
     },
     {
-      name: "dev_output",
-      description: "Get recent output from a running dev server.",
+      name: "watch",
+      description: `Get compilation result or raw output from a dev server.
+Detects the state automatically: if building waits for result, if idle returns last result.
+
+Parameters:
+- name: server identifier (required)
+- timeout: max wait in seconds (default: 60 for compile, 120 for startup)
+- startup: true — waits for full app startup (Nest started / Angular URL) instead of just compile
+- lines: N — returns last N lines of raw output (non-blocking, no wait)
+- clear: true — clears buffer after reading (only with lines)`,
       inputSchema: {
         type: "object",
         properties: {
           name: { type: "string", description: "Server identifier" },
-          lines: { type: "number", description: "Number of recent lines (default: all, max: 2000)" },
-          clear: { type: "boolean", description: "Clear buffer after reading (default: false)" },
+          timeout: { type: "number", description: "Max wait time in seconds" },
+          startup: { type: "boolean", description: "Wait for full app startup instead of just compile" },
+          lines: { type: "number", description: "Return this many raw output lines (non-blocking)" },
+          clear: { type: "boolean", description: "Clear buffer after reading (only with lines)" },
         },
         required: ["name"],
       },
@@ -491,43 +497,6 @@ Examples:
         properties: {
           name: { type: "string", description: "Server identifier (optional — omit for all)" },
         },
-      },
-    },
-    {
-      name: "wait_for_recompile",
-      description: `Wait for a recompilation cycle to complete after code changes.
-Blocks until the dev server detects changes, compiles, and produces a result.
-Returns structured build result with errors and warnings.
-
-Use this AFTER making code changes to verify compilation quickly.
-
-NestJS detects: "Found 0/N errors. Watching for file changes"
-Angular detects: "Page reload sent to client(s)" or "Application bundle generation failed"`,
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Server identifier" },
-          timeout: { type: "number", description: "Max wait time in seconds (default: 60)" },
-        },
-        required: ["name"],
-      },
-    },
-    {
-      name: "wait_for_build",
-      description: `Wait for the initial build (or a fresh build cycle) to complete.
-Use this after starting a dev server to wait for full startup.
-
-Options:
-- mode: "compile" (default) — waits for compilation result only (fast)
-- mode: "full" — waits for full app startup (Nest application started / Angular Local URL)`,
-      inputSchema: {
-        type: "object",
-        properties: {
-          name: { type: "string", description: "Server identifier" },
-          timeout: { type: "number", description: "Max wait time in seconds (default: 120)" },
-          mode: { type: "string", description: '"compile" (default) or "full"' },
-        },
-        required: ["name"],
       },
     },
     {
@@ -582,8 +551,8 @@ ${getUsageGuideText()}` },
   Cmd:  ${existing.runner} ${existing.cmd}
 
 No necesitas volver a iniciarlo. Usa:
-  dev_status("${serverName}")       → ver su estado actual
-  wait_for_recompile("${serverName}") → esperar resultado de compilacion
+  watch("${serverName}")            → ver resultado de compilacion
+  dev_status("${serverName}")       → ver estado actual detallado
   restart_dev("${serverName}")      → si necesitas reiniciarlo
   stop_dev("${serverName}")         → si quieres detenerlo primero`,
             }],
@@ -608,41 +577,6 @@ No necesitas volver a iniciarlo. Usa:
           isError: true,
         };
       }
-    }
-
-    case "dev_output": {
-      const { name: serverName, lines, clear } = args;
-      const proc = processes.get(serverName);
-
-      const prev = _lastToolCall.get(serverName);
-      const count = _pollingCounters.get(serverName) || 0;
-      if (prev === "dev_output") {
-        _pollingCounters.set(serverName, count + 1);
-      } else {
-        _pollingCounters.set(serverName, 0);
-      }
-      _lastToolCall.set(serverName, "dev_output");
-
-      if (!proc) {
-        return {
-          content: [{ type: "text", text: `No server found with name "${serverName}". Use start_dev first or check dev_status.` }],
-          isError: true,
-        };
-      }
-
-      const outputCount = lines ? Math.min(lines, proc.buffer.length) : proc.buffer.length;
-      const output = proc.buffer.slice(-outputCount).join("\n") || "[No output yet]";
-
-      if (clear) proc.buffer = [];
-
-      let hint = "";
-      if (count >= 1) {
-        hint = `\n⚠️  Noto que consultas dev_output repetidamente. Si estas esperando una compilacion, usa wait_for_recompile("${serverName}") — bloquea hasta que termine y devuelve el resultado completo con errores.`;
-      }
-
-      return {
-        content: [{ type: "text", text: output + hint }],
-      };
     }
 
     case "stop_dev": {
@@ -754,27 +688,57 @@ No necesitas volver a iniciarlo. Usa:
       };
     }
 
-    case "wait_for_recompile": {
-      const { name: serverName, timeout } = args;
-      _pollingCounters.set(serverName, 0);
-      const timeoutMs = (timeout || DEFAULT_RECOMPILE_TIMEOUT / 1000) * 1000;
+    case "watch": {
+      const { name: serverName, timeout, lines, startup, clear } = args;
       const proc = processes.get(serverName);
 
       if (!proc) {
         return {
-          content: [{ type: "text", text: JSON.stringify({ status: "error", message: `No server "${serverName}"` }) }],
+          content: [{ type: "text", text: `No server "${serverName}". Use start_dev first.` }],
           isError: true,
         };
       }
 
       const tracker = getTracker(serverName);
 
-      if (tracker.state === "success" || tracker.state === "failure") {
-        return {
-          content: [{ type: "text", text: JSON.stringify(tracker.lastBuild, null, 2) }],
-        };
+      // Mode 1: Raw output (non-blocking)
+      if (lines !== undefined) {
+        const outputCount = Math.min(lines, proc.buffer.length);
+        const output = proc.buffer.slice(-outputCount).join("\n") || "[No output yet]";
+        if (clear) proc.buffer = [];
+        return { content: [{ type: "text", text: output }] };
       }
 
+      // Mode 2: Wait for full app startup
+      if (startup) {
+        if (tracker.fullStartupDone) {
+          return { content: [{ type: "text", text: JSON.stringify({ status: "success", message: "Server already fully started", ...tracker.lastBuild }, null, 2) }] };
+        }
+        const timeoutMs = (timeout || DEFAULT_BUILD_TIMEOUT / 1000) * 1000;
+        const waitMs = Math.min(timeoutMs, 120_000);
+        await new Promise(resolve => {
+          const check = () => {
+            if (tracker.fullStartupDone || tracker.state === "exited") { resolve(); return; }
+            setTimeout(check, 200);
+          };
+          setTimeout(resolve, waitMs);
+          check();
+        });
+        if (!tracker.fullStartupDone) {
+          return { content: [{ type: "text", text: JSON.stringify({ status: "timeout", message: "Full startup not detected within timeout", lastBuild: tracker.lastBuild }, null, 2) }] };
+        }
+        return { content: [{ type: "text", text: JSON.stringify({ status: "success", message: "Full startup complete", ...tracker.lastBuild }, null, 2) }] };
+      }
+
+      // Mode 3: Smart compilation result
+      const timeoutMs = (timeout || DEFAULT_RECOMPILE_TIMEOUT / 1000) * 1000;
+
+      // Already has a completed build result
+      if (tracker.state === "success" || tracker.state === "failure") {
+        return { content: [{ type: "text", text: JSON.stringify(tracker.lastBuild, null, 2) }] };
+      }
+
+      // Currently building
       if (tracker.state === "building") {
         const result = await waitForEvent(serverName, timeoutMs, "end");
         if (!result) {
@@ -786,7 +750,13 @@ No necesitas volver a iniciarlo. Usa:
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
       }
 
+      // Idle (server running, no build in progress)
       if (tracker.state === "idle") {
+        if (tracker.lastBuild) {
+          return { content: [{ type: "text", text: JSON.stringify(tracker.lastBuild, null, 2) }] };
+        }
+
+        // No build done yet — wait for one
         const startPromise = waitForEvent(serverName, IDLE_START_TIMEOUT, "start");
         const startResult = await startPromise;
 
@@ -795,12 +765,18 @@ No necesitas volver a iniciarlo. Usa:
         }
 
         if (startResult.status === "timeout") {
-          if (tracker.lastBuild) {
-            return { content: [{ type: "text", text: JSON.stringify(tracker.lastBuild, null, 2) }] };
+          // Wait a bit more for the build to appear
+          const endRes = await waitForEvent(serverName, Math.max(timeoutMs - IDLE_START_TIMEOUT, 5000), "end");
+          if (!endRes) {
+            return { content: [{ type: "text", text: JSON.stringify({ status: "error", message: "Server not found" }) }], isError: true };
           }
-          return { content: [{ type: "text", text: JSON.stringify({ status: "idle", message: "No recompilation detected within timeout. Server is idle.", lastBuild: tracker.lastBuild }, null, 2) }] };
+          if (endRes.status === "timeout") {
+            return { content: [{ type: "text", text: JSON.stringify({ status: "timeout", message: "Build not detected within timeout", lastBuild: tracker.lastBuild }, null, 2) }] };
+          }
+          return { content: [{ type: "text", text: JSON.stringify(endRes, null, 2) }] };
         }
 
+        // Build started, wait for it
         const endResult = await waitForEvent(serverName, timeoutMs, "end");
         if (!endResult) {
           return { content: [{ type: "text", text: JSON.stringify({ status: "error", message: "Server not found" }) }], isError: true };
@@ -811,73 +787,8 @@ No necesitas volver a iniciarlo. Usa:
         return { content: [{ type: "text", text: JSON.stringify(endResult, null, 2) }] };
       }
 
+      // exited / error
       return { content: [{ type: "text", text: JSON.stringify({ status: tracker.state, lastBuild: tracker.lastBuild }, null, 2) }] };
-    }
-
-    case "wait_for_build": {
-      const { name: serverName, timeout, mode } = args;
-      _pollingCounters.set(serverName, 0);
-      const timeoutMs = (timeout || DEFAULT_BUILD_TIMEOUT / 1000) * 1000;
-      const buildMode = mode || "compile";
-      const proc = processes.get(serverName);
-
-      if (!proc) {
-        return {
-          content: [{ type: "text", text: JSON.stringify({ status: "error", message: `No server "${serverName}"` }) }],
-          isError: true,
-        };
-      }
-
-      const tracker = getTracker(serverName);
-
-      if (buildMode === "full" && tracker.fullStartupDone) {
-        return { content: [{ type: "text", text: JSON.stringify({ status: "success", message: "Server already fully started", ...tracker.lastBuild }, null, 2) }] };
-      }
-
-      if (buildMode === "full") {
-        const waitMs = Math.min(timeoutMs, 120_000);
-        await new Promise(resolve => {
-          const check = () => {
-            if (tracker.fullStartupDone || tracker.state === "exited") { resolve(); return; }
-            setTimeout(check, 200);
-          };
-          setTimeout(resolve, waitMs);
-          check();
-        });
-
-        if (!tracker.fullStartupDone) {
-          return { content: [{ type: "text", text: JSON.stringify({ status: "timeout", message: "Full startup not detected within timeout", lastBuild: tracker.lastBuild }, null, 2) }] };
-        }
-        return { content: [{ type: "text", text: JSON.stringify({ status: "success", message: "Full startup complete", ...tracker.lastBuild }, null, 2) }] };
-      }
-
-      if (tracker.lastBuild) {
-        return { content: [{ type: "text", text: JSON.stringify({ status: tracker.lastBuild.status, ...tracker.lastBuild }, null, 2) }] };
-      }
-
-      if (tracker.state === "building") {
-        const result = await waitForEvent(serverName, timeoutMs, "end");
-        if (!result) {
-          return { content: [{ type: "text", text: JSON.stringify({ status: "error", message: "Server not found" }) }], isError: true };
-        }
-        if (result.status === "timeout" && tracker.lastBuild) {
-          return { content: [{ type: "text", text: JSON.stringify(tracker.lastBuild, null, 2) }] };
-        }
-        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
-      }
-
-      const startRes = await waitForEvent(serverName, 30_000, "start");
-      if (!startRes || startRes.status === "timeout") {
-        return { content: [{ type: "text", text: JSON.stringify({ status: "timeout", message: "Build not started within timeout" }, null, 2) }] };
-      }
-      const endRes = await waitForEvent(serverName, timeoutMs, "end");
-      if (!endRes) {
-        return { content: [{ type: "text", text: JSON.stringify({ status: "error", message: "Server not found" }) }], isError: true };
-      }
-      if (endRes.status === "timeout" && tracker.lastBuild) {
-        return { content: [{ type: "text", text: JSON.stringify(tracker.lastBuild, null, 2) }] };
-      }
-      return { content: [{ type: "text", text: JSON.stringify(endRes, null, 2) }] };
     }
 
     case "get_usage_guide": {
@@ -898,6 +809,13 @@ Angular:
   Result: "Page reload sent to client(s)." | "Application bundle generation failed."
   Full:   "Local: http://..."
 
+## watch() behaviour
+
+watch(name)                    → resultado compilacion (espera si esta buildando, devuelve ultimo si idle)
+watch(name, {startup:true})    → espera a que la app arranque completamente (Nest/Angular URL)
+watch(name, {lines:N})         → N lineas de output raw (no bloquea)
+watch(name, {lines:N, clear:true}) → igual pero limpia el buffer
+
 ## Structured response
 
 Success:
@@ -907,16 +825,14 @@ Failure:
   { status: "failure", duration_ms: 400, errors: [{ file: "...", code: "TS2304", message: "..." }] }
 
 Timeout:
-  { status: "timeout", message: "No recompilation detected within timeout" }
+  { status: "timeout", message: "No compilation detected within timeout" }
 
 ## Notes
 
-- Errors and warnings are extracted automatically and returned separately
-- If the server is idle when wait_for_recompile is called, it waits up to 10s for a build to start
-- Default timeout: wait_for_recompile=60s, wait_for_build=120s
-- Child processes are auto-killed when OpenCode closes (SIGTERM/SIGINT/exit)
-- Duplicate start_dev attempts return the existing server info
-- start_dev validates cmd against package.json — one-shot builds are rejected with suggestions` }],
+- Errors and warnings extracted automatically
+- Child processes auto-killed when OpenCode closes (SIGTERM/SIGINT/exit)
+- Duplicate start_dev returns existing server info
+- start_dev validates cmd against package.json — one-shots rejected with suggestions` }],
       };
     }
 
